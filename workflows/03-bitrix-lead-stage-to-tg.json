@@ -196,5 +196,11 @@
     "Stage Changed?": { "main": [[{ "node": "Get Stage Names", "type": "main", "index": 0 }], []] },
     "Get Stage Names": { "main": [[{ "node": "Notify Client", "type": "main", "index": 0 }]] }
   },
-  "settings": { "executionOrder": "v1", "timezone": "Europe/Moscow", "errorWorkflow": "REPLACE_ERROR_WORKFLOW_ID" }
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "errorWorkflow": "REPLACE_ERROR_WORKFLOW_ID",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
 }
