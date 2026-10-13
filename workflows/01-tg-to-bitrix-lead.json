@@ -1,0 +1,275 @@
+{
+  "name": "TG → Bitrix lead",
+  "nodes": [
+    {
+      "id": "n1",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [0, 200],
+      "webhookId": "3f6c2a7e-9b1d-4d0e-8a51-6c2f0b7d9e14",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": { "updates": ["message"], "additionalFields": {} }
+    },
+    {
+      "id": "n2",
+      "name": "Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "position": [220, 200],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "id", "value": "REPLACE_CONFIG_TABLE_ID" },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "n3",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 200],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Конфиг из Data Table integration_config (key/value) — единственное место, где лежит вебхук\nconst cfg = Object.fromEntries($('Config').all().map(i => [i.json.key, i.json.value]));\nif (!cfg.bitrix_webhook) throw new Error('integration_config: bitrix_webhook is not set');\nconst bx = cfg.bitrix_webhook.endsWith('/') ? cfg.bitrix_webhook : cfg.bitrix_webhook + '/';\n\nconst msg = $('Telegram Trigger').first().json.message || {};\nconst from = msg.from || {};\nconst text = (msg.text || '').trim();\n\nlet kind = 'other';\nlet phone = null;\nlet hint = 'Чтобы оставить заявку, нажмите кнопку «📱 Оставить заявку» внизу экрана. Если кнопки не видно — отправьте /start.';\n\nif (/^\\/start(\\s|@|$)/.test(text)) {\n  kind = 'start';\n} else if (msg.contact) {\n  if (msg.contact.user_id && msg.contact.user_id !== from.id) {\n    // пересланный чужой контакт не принимаем\n    hint = 'Пожалуйста, отправьте свой номер кнопкой «📱 Оставить заявку».';\n  } else {\n    // Нормализация к +7XXXXXXXXXX (8XXXXXXXXXX, 7XXXXXXXXXX, XXXXXXXXXX)\n    let d = String(msg.contact.phone_number || '').replace(/\\D/g, '');\n    if (d.length === 11 && (d[0] === '8' || d[0] === '7')) d = '7' + d.slice(1);\n    else if (d.length === 10) d = '7' + d;\n    phone = '+' + d;\n    kind = 'contact';\n  }\n}\n\nconst firstName = (msg.contact?.first_name || from.first_name || '').trim();\nconst lastName = (msg.contact?.last_name || from.last_name || '').trim();\n\nreturn [{\n  json: {\n    kind,\n    chatId: msg.chat?.id,\n    firstName,\n    lastName,\n    fullName: [firstName, lastName].filter(Boolean).join(' ') || 'Без имени',\n    username: from.username || '',\n    phone,\n    hint,\n    bx,\n    portal: bx.match(/^https?:\\/\\/[^/]+/)[0],\n    managerChatId: cfg.manager_chat_id,\n  },\n}];"
+      }
+    },
+    {
+      "id": "n4",
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [660, 200],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ ['start', 'contact', 'other'].indexOf($json.kind) }}"
+      }
+    },
+    {
+      "id": "n5",
+      "name": "Send Welcome",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [900, 0],
+      "webhookId": "e4ee5868-a657-4765-8cc0-48a61c01a31d",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "=Здравствуйте, {{ ($json.firstName || 'друг').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}! 👋\nЯ приму вашу заявку — нажмите кнопку «📱 Оставить заявку», и менеджер свяжется с вами по телефону.",
+        "replyMarkup": "replyKeyboard",
+        "replyKeyboard": {
+          "rows": [
+            { "row": { "buttons": [{ "text": "📱 Оставить заявку", "additionalFields": { "request_contact": true } }] } }
+          ]
+        },
+        "replyKeyboardOptions": { "resize_keyboard": true },
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    },
+    {
+      "id": "n6",
+      "name": "Send Hint",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [900, 400],
+      "webhookId": "54b24789-c937-4373-b21b-992171ca3cfe",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.hint }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    },
+    {
+      "id": "n7",
+      "name": "Find Duplicate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.bx }}crm.duplicate.findbycomm",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ entity_type: 'LEAD', type: 'PHONE', values: [$json.phone] }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "n8",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1120, 200],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ ($json.result?.LEAD ?? []).length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n9",
+      "name": "Add Timeline Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 100],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Prepare').first().json.bx }}crm.timeline.comment.add",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { ENTITY_ID: Math.max(...$json.result.LEAD), ENTITY_TYPE: 'lead', COMMENT: 'Повторное обращение из Telegram ' + $now.setZone('Europe/Moscow').toFormat('dd.MM.yyyy HH:mm') } }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "n10",
+      "name": "Create Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Prepare').first().json.bx }}crm.lead.add",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const p = $('Prepare').first().json; return JSON.stringify({ fields: { TITLE: 'Заявка из Telegram: ' + p.fullName, NAME: p.firstName, LAST_NAME: p.lastName || undefined, PHONE: [{ VALUE: p.phone, VALUE_TYPE: 'WORK' }], SOURCE_ID: 'TELEGRAM', SOURCE_DESCRIPTION: 'Telegram-бот', COMMENTS: 'Telegram chat_id: ' + p.chatId + ', username: ' + (p.username ? '@' + p.username : '—') }, params: { REGISTER_SONET_EVENT: 'Y' } }); })() }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "n11",
+      "name": "Result: Duplicate",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1560, 100],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "isNew", "type": "boolean", "value": false },
+            { "id": "a2", "name": "leadId", "type": "number", "value": "={{ Math.max(...$('Find Duplicate').first().json.result.LEAD) }}" },
+            { "id": "a3", "name": "replyText", "type": "string", "value": "=Ваша заявка уже есть у нас (№{{ Math.max(...$('Find Duplicate').first().json.result.LEAD) }}). Мы отметили повторное обращение — менеджер скоро свяжется с вами." }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n12",
+      "name": "Result: New",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1560, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "isNew", "type": "boolean", "value": true },
+            { "id": "b2", "name": "leadId", "type": "number", "value": "={{ $json.result }}" },
+            { "id": "b3", "name": "replyText", "type": "string", "value": "=Заявка №{{ $json.result }} принята, менеджер скоро свяжется с вами. Спасибо!" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n13",
+      "name": "Reply to Client",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1800, 100],
+      "webhookId": "a9657193-2d3a-412d-beed-117131a3b3c1",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prepare').first().json.chatId }}",
+        "text": "={{ $json.replyText }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    },
+    {
+      "id": "n14",
+      "name": "Notify Manager",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1800, 300],
+      "webhookId": "7078df1a-6ab0-4135-b507-b39b4a2552c3",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prepare').first().json.managerChatId }}",
+        "text": "={{ (() => { const e = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); const p = $('Prepare').first().json; const link = p.portal + '/crm/lead/details/' + $json.leadId + '/'; return [($json.isNew ? '🆕 <b>Новая заявка</b>' : '🔁 <b>Повторное обращение</b>') + ' из Telegram', 'Имя: ' + e(p.fullName), 'Телефон: ' + e(p.phone), 'Telegram: ' + (p.username ? '@' + e(p.username) : '—') + ' (chat_id ' + p.chatId + ')', 'Лид №' + $json.leadId + ': <a href=\"' + link + '\">' + link + '</a>'].join('\\n'); })() }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Prepare", "type": "main", "index": 0 }]] },
+    "Prepare": { "main": [[{ "node": "Route", "type": "main", "index": 0 }]] },
+    "Route": {
+      "main": [
+        [{ "node": "Send Welcome", "type": "main", "index": 0 }],
+        [{ "node": "Find Duplicate", "type": "main", "index": 0 }],
+        [{ "node": "Send Hint", "type": "main", "index": 0 }]
+      ]
+    },
+    "Find Duplicate": { "main": [[{ "node": "Is Duplicate?", "type": "main", "index": 0 }]] },
+    "Is Duplicate?": {
+      "main": [
+        [{ "node": "Add Timeline Comment", "type": "main", "index": 0 }],
+        [{ "node": "Create Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Add Timeline Comment": { "main": [[{ "node": "Result: Duplicate", "type": "main", "index": 0 }]] },
+    "Create Lead": { "main": [[{ "node": "Result: New", "type": "main", "index": 0 }]] },
+    "Result: Duplicate": {
+      "main": [[
+        { "node": "Reply to Client", "type": "main", "index": 0 },
+        { "node": "Notify Manager", "type": "main", "index": 0 }
+      ]]
+    },
+    "Result: New": {
+      "main": [[
+        { "node": "Reply to Client", "type": "main", "index": 0 },
+        { "node": "Notify Manager", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "errorWorkflow": "REPLACE_ERROR_WORKFLOW_ID",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}

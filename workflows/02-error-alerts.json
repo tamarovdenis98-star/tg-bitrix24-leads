@@ -1,0 +1,61 @@
+{
+  "name": "Error alerts",
+  "nodes": [
+    {
+      "id": "e1",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "e2",
+      "name": "Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [220, 0],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "id", "value": "REPLACE_CONFIG_TABLE_ID" },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "e3",
+      "name": "Build Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Конфиг из Data Table integration_config (key/value)\nconst cfg = Object.fromEntries($('Config').all().map(i => [i.json.key, i.json.value]));\nconst e = $('Error Trigger').first().json;\n\n// Маскируем секреты: путь входящего вебхука Битрикса и токены ботов Telegram\nconst mask = (s) => String(s ?? '')\n  .replace(/\\/rest\\/\\d+\\/[A-Za-z0-9]+/g, '/rest/***')\n  .replace(/\\d{6,}:[A-Za-z0-9_-]{30,}/g, '***');\n// Экранируем под parse_mode=HTML, иначе _ и * в тексте ошибки ломают отправку\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst exec = e.execution || {};\nconst err = exec.error || e.trigger?.error || {};\nconst text = [\n  '🚨 <b>Ошибка в n8n</b>',\n  `Workflow: ${esc(e.workflow?.name ?? '—')} (id ${esc(e.workflow?.id ?? '—')})`,\n  `Нода: ${esc(exec.lastNodeExecuted ?? err.node?.name ?? '—')}`,\n  `Ошибка: ${esc(mask(err.message || 'unknown').slice(0, 1000))}`,\n  err.description ? `Детали: ${esc(mask(err.description).slice(0, 1000))}` : null,\n  `Execution: ${esc(exec.url ?? (exec.id ? 'id ' + exec.id : '—'))}`,\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { chatId: cfg.manager_chat_id, text } }];"
+      }
+    },
+    {
+      "id": "e4",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [660, 0],
+      "webhookId": "2fd6f141-4c7b-451d-b4e8-43d26c2f7156",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Build Alert", "type": "main", "index": 0 }]] },
+    "Build Alert": { "main": [[{ "node": "Send Alert", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Europe/Moscow" }
+}

@@ -1,0 +1,200 @@
+{
+  "name": "Bitrix lead stage → TG client",
+  "nodes": [
+    {
+      "id": "s1",
+      "name": "Bitrix Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 200],
+      "webhookId": "b7d1c0a4-5e2f-4a39-9c61-2f8e4d7a1b53",
+      "parameters": { "httpMethod": "POST", "path": "bitrix24-lead-update", "responseMode": "onReceived", "options": {} }
+    },
+    {
+      "id": "s2",
+      "name": "Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "executeOnce": true,
+      "position": [220, 200],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "id", "value": "REPLACE_CONFIG_TABLE_ID" },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "s3",
+      "name": "Check Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 200],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Конфиг из Data Table integration_config (key/value)\nconst cfg = Object.fromEntries($('Config').all().map(i => [i.json.key, i.json.value]));\nconst b = $('Bitrix Webhook').first().json.body || {};\n\n// Битрикс шлёт x-www-form-urlencoded: data[FIELDS][ID], auth[application_token]\nconst token = b.auth?.application_token ?? b['auth[application_token]'];\nconst leadId = Number(b.data?.FIELDS?.ID ?? b['data[FIELDS][ID]']);\n\n// Запросы без верного токена исходящего вебхука молча игнорируем\nif (!cfg.bitrix_outgoing_token || token !== cfg.bitrix_outgoing_token) return [];\nif (b.event !== 'ONCRMLEADUPDATE' || !leadId) return [];\n\nconst bx = cfg.bitrix_webhook.endsWith('/') ? cfg.bitrix_webhook : cfg.bitrix_webhook + '/';\nreturn [{ json: { leadId, bx } }];"
+      }
+    },
+    {
+      "id": "s4",
+      "name": "Get Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.bx }}crm.lead.get",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ id: $json.leadId }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "s5",
+      "name": "Get Known Stage",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "alwaysOutputData": true,
+      "position": [880, 200],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "id", "value": "REPLACE_LEAD_STAGE_TABLE_ID" },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            { "keyName": "lead_id", "condition": "eq", "keyValue": "={{ $('Check Event').first().json.leadId }}" }
+          ]
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "id": "s6",
+      "name": "Compare Stage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 200],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const lead = $('Get Lead').first().json.result;\nconst known = $input.all().map(i => i.json).find(r => r.lead_id != null);\n// Лиды из бота создаются в стадии NEW — считаем её исходной, если стадия ещё не сохранена\nconst prev = known?.status_id ?? 'NEW';\n// chat_id клиента берём из COMMENTS, куда его записал workflow «TG → Bitrix lead»\nconst m = String(lead.COMMENTS || '').match(/Telegram chat_id:\\s*(-?\\d+)/);\n\nreturn [{\n  json: {\n    lead_id: Number(lead.ID),\n    status_id: lead.STATUS_ID,\n    prev,\n    changed: prev !== lead.STATUS_ID,\n    chatId: m ? m[1] : null,\n  },\n}];"
+      }
+    },
+    {
+      "id": "s7",
+      "name": "Stage Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1320, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "r1", "name": "lead_id", "type": "number", "value": "={{ $json.lead_id }}" },
+            { "id": "r2", "name": "status_id", "type": "string", "value": "={{ $json.status_id }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s8",
+      "name": "Save Stage",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [1540, 200],
+      "parameters": {
+        "resource": "row",
+        "operation": "upsert",
+        "dataTableId": { "__rl": true, "mode": "id", "value": "REPLACE_LEAD_STAGE_TABLE_ID" },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [{ "keyName": "lead_id", "condition": "eq", "keyValue": "={{ $json.lead_id }}" }]
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            { "id": "lead_id", "displayName": "lead_id", "required": false, "defaultMatch": false, "display": true, "type": "number", "readOnly": false, "removed": false },
+            { "id": "status_id", "displayName": "status_id", "required": false, "defaultMatch": false, "display": true, "type": "string", "readOnly": false, "removed": false }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s9",
+      "name": "Stage Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1760, 200],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Compare Stage').first().json.changed && !!$('Compare Stage').first().json.chatId }}",
+              "rightValue": "",
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "s10",
+      "name": "Get Stage Names",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 100],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Check Event').first().json.bx }}crm.status.entity.items",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ entityId: 'STATUS' }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "s11",
+      "name": "Notify Client",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2200, 100],
+      "webhookId": "12d7362f-8b04-4ea3-b1c0-3863ffa0a38e",
+      "credentials": { "telegramApi": { "id": "REPLACE_TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Compare Stage').first().json.chatId }}",
+        "text": "={{ (() => { const c = $('Compare Stage').first().json; const st = ($json.result || []).find(s => s.STATUS_ID === c.status_id); const name = String(st ? st.NAME : c.status_id).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); return '📋 Статус вашей заявки №' + c.lead_id + ' изменился: <b>' + name + '</b>'; })() }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
+      }
+    }
+  ],
+  "connections": {
+    "Bitrix Webhook": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Check Event", "type": "main", "index": 0 }]] },
+    "Check Event": { "main": [[{ "node": "Get Lead", "type": "main", "index": 0 }]] },
+    "Get Lead": { "main": [[{ "node": "Get Known Stage", "type": "main", "index": 0 }]] },
+    "Get Known Stage": { "main": [[{ "node": "Compare Stage", "type": "main", "index": 0 }]] },
+    "Compare Stage": { "main": [[{ "node": "Stage Row", "type": "main", "index": 0 }]] },
+    "Stage Row": { "main": [[{ "node": "Save Stage", "type": "main", "index": 0 }]] },
+    "Save Stage": { "main": [[{ "node": "Stage Changed?", "type": "main", "index": 0 }]] },
+    "Stage Changed?": { "main": [[{ "node": "Get Stage Names", "type": "main", "index": 0 }], []] },
+    "Get Stage Names": { "main": [[{ "node": "Notify Client", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Europe/Moscow", "errorWorkflow": "REPLACE_ERROR_WORKFLOW_ID" }
+}
